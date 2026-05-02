@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "driver/i2s.h"
 #include <math.h>
+#include "Button.h"
 
 #define I2S_PORT I2S_NUM_0
 
@@ -10,6 +11,16 @@
 #define I2S_DOUT 7   // amp
 
 #define BUTTON_PIN 9
+
+#define RX_PIN 20
+#define TX_PIN 21
+#define DIR_PIN 10
+const gpio_num_t CMD_BTN_PIN = GPIO_NUM_3;
+
+#define LED_PIN GPIO_NUM_2
+bool isLedOn = false;
+
+HardwareSerial RS485(1);
 
 #define SAMPLE_RATE 16000
 #define BUFFER_SAMPLES (16000 * 3) // 3 seconds
@@ -44,7 +55,70 @@ void setupI2S() {
     i2s_set_pin(I2S_PORT, &pins);
 }
 
+void setTransmitMode() {
+    digitalWrite(DIR_PIN, HIGH);
+    Serial.println("TX MODE");
+    delayMicroseconds(50);
+}
+
+void setReceiveMode() {
+    delayMicroseconds(50);
+    digitalWrite(DIR_PIN, LOW);
+    Serial.println("RX MODE");
+    delayMicroseconds(50);
+}
+
+void sendMessage(const char* msg) {
+    Serial.println("--- sending: " + String(msg));
+    setTransmitMode();
+
+    RS485.print(msg);
+    RS485.flush();
+
+    delayMicroseconds(10);
+    setReceiveMode();
+}
+
+void rs485Task(void *param) {
+    while (true) {
+        while (RS485.available()) {
+            String msg = RS485.readStringUntil('\n');
+            Serial.print("--- received: ");
+            Serial.println(msg);
+            if (isLedOn) {
+                digitalWrite(LED_PIN, LOW);
+                isLedOn = false;
+            } else {
+                digitalWrite(LED_PIN, HIGH);
+                isLedOn = true;
+            }
+        }
+
+        vTaskDelay(1);
+    }
+}
+
+static void onCommandButtonPressDownCb(void *button_handle, void *usr_data) {
+    Serial.println("--- CMD BTN DOWN ...");
+    sendMessage("button pressed\n");
+}
+
+void initButtons() {
+    Button *btnCmd = new Button(CMD_BTN_PIN, false);
+    btnCmd->attachPressDownEventCb(&onCommandButtonPressDownCb, NULL);
+}
+
+void initRS485() {
+    pinMode(DIR_PIN, OUTPUT);
+    setReceiveMode();
+
+    Serial.begin(115200);
+    RS485.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+}
+
 void setup() {
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
     Serial.begin(115200);
 
     pinMode(BUTTON_PIN, INPUT_PULLUP);
@@ -56,6 +130,9 @@ void setup() {
     }
 
     setupI2S();
+    initButtons();
+    initRS485();
+    xTaskCreatePinnedToCore(rs485Task, "rs485Task", 4096, NULL, 1, NULL, 0);
 }
 
 void loop() {
