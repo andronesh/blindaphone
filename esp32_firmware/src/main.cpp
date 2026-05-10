@@ -27,7 +27,7 @@ HardwareSerial RS485(1);
 
 int32_t *audioBuffer;
 size_t recordedSamples = 0;
-bool recording = false;
+bool inRecordingSession = false;
 
 float GAIN = 15.0;
 
@@ -135,47 +135,63 @@ void setup() {
     xTaskCreatePinnedToCore(rs485Task, "rs485Task", 4096, NULL, 1, NULL, 0);
 }
 
+bool isInRecordingSession() {
+    return inRecordingSession;
+}
+
+void startRecordingSession() {
+    Serial.println("Recording...");
+    inRecordingSession = true;
+    recordedSamples = 0;
+}
+
+void processRecording() {
+    if (recordedSamples >= BUFFER_SAMPLES)
+        return;
+
+    int32_t rawSample;
+    size_t bytesRead;
+
+    i2s_read(I2S_PORT, &rawSample, sizeof(rawSample), &bytesRead, portMAX_DELAY);
+    rawSample >>= 8;
+    float x = rawSample / 8388608.0;
+    x *= GAIN;
+    x = x / (1.0 + fabs(x));
+
+    int32_t sample32 = (int32_t)(x * 2147483647);
+    audioBuffer[recordedSamples++] = sample32;
+}
+
+void stopAndPlayback() {
+    Serial.println("Playback...");
+    inRecordingSession = false;
+
+    size_t bytesWritten;
+
+    for (size_t i = 0; i < recordedSamples; i++) {
+        i2s_write(I2S_PORT, &audioBuffer[i], sizeof(int32_t), &bytesWritten, portMAX_DELAY);
+    }
+
+    i2s_zero_dma_buffer(I2S_PORT);
+    i2s_stop(I2S_PORT);
+    delay(10);
+    i2s_start(I2S_PORT);
+
+    Serial.println("Done");
+}
+
 void loop() {
     bool buttonPressed = digitalRead(BUTTON_PIN) == LOW;
 
-    if (buttonPressed && !recording) {
-        Serial.println("Recording...");
-        recording = true;
-        recordedSamples = 0;
+    if (buttonPressed && !isInRecordingSession()) {
+        startRecordingSession();
     }
 
-    if (recording && buttonPressed) {
-        if (recordedSamples < BUFFER_SAMPLES) {
-            int32_t rawSample;
-            size_t bytesRead;
-
-            i2s_read(I2S_PORT, &rawSample, sizeof(rawSample), &bytesRead, portMAX_DELAY);
-            rawSample >>= 8;
-            float x = rawSample / 8388608.0;
-            x *= GAIN;
-            x = x / (1.0 + fabs(x));
-
-            int32_t sample32 = (int32_t)(x * 2147483647);
-            audioBuffer[recordedSamples++] = sample32;
-        }
+    if (buttonPressed && isInRecordingSession()) {
+        processRecording();
     }
 
-    // ⏹ STOP → PLAYBACK
-    if (!buttonPressed && recording) {
-        Serial.println("Playback...");
-        recording = false;
-
-        size_t bytesWritten;
-
-        for (size_t i = 0; i < recordedSamples; i++) {
-            i2s_write(I2S_PORT, &audioBuffer[i], sizeof(int32_t), &bytesWritten, portMAX_DELAY);
-        }
-
-        i2s_zero_dma_buffer(I2S_PORT);
-        i2s_stop(I2S_PORT);
-        delay(10);
-        i2s_start(I2S_PORT);
-
-        Serial.println("Done");
+    if (!buttonPressed && isInRecordingSession()) {
+        stopAndPlayback();
     }
 }
