@@ -132,23 +132,6 @@ void initRS485() {
     RS485.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
 }
 
-void setup() {
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
-    Serial.begin(115200);
-
-    audioBuffer = (int32_t*)malloc(BUFFER_SAMPLES * sizeof(int32_t));
-    if (!audioBuffer) {
-        Serial.println("Memory allocation failed!");
-        while (1);
-    }
-
-    setupI2S();
-    initButtons();
-    initRS485();
-    xTaskCreatePinnedToCore(rs485Task, "rs485Task", 4096, NULL, 1, NULL, 0);
-}
-
 bool isInRecordingSession() {
     return inRecordingSession;
 }
@@ -196,6 +179,23 @@ void stopAndPlayback() {
 
     inPlaybackSession = false;
     Serial.println("Done");
+}
+
+void setup() {
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
+    Serial.begin(115200);
+
+    audioBuffer = (int32_t*)malloc(BUFFER_SAMPLES * sizeof(int32_t));
+    if (!audioBuffer) {
+        Serial.println("Memory allocation failed!");
+        while (1);
+    }
+
+    setupI2S();
+    initButtons();
+    initRS485();
+    xTaskCreatePinnedToCore(rs485Task, "rs485Task", 4096, NULL, 1, NULL, 0);
 }
 
 void loop() {
