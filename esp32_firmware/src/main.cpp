@@ -10,7 +10,7 @@
 #define I2S_DIN  6   // mic
 #define I2S_DOUT 7   // amp
 
-#define BUTTON_PIN 9
+const gpio_num_t REC_BTN_PIN = GPIO_NUM_9;
 
 #define RX_PIN 20
 #define TX_PIN 21
@@ -28,6 +28,7 @@ HardwareSerial RS485(1);
 int32_t *audioBuffer;
 size_t recordedSamples = 0;
 bool inRecordingSession = false;
+bool inPlaybackSession = false;
 
 float GAIN = 15.0;
 
@@ -103,9 +104,24 @@ static void onCommandButtonPressDownCb(void *button_handle, void *usr_data) {
     sendMessage("button pressed\n");
 }
 
+static void onRecordingButtonPressDownCb(void *button_handle, void *usr_data) {
+    Serial.println("--- REC BTN DOWN ...");
+    inRecordingSession = true;
+    recordedSamples = 0;
+}
+
+static void onRecordingButtonPressUpCb(void *button_handle, void *usr_data) {
+    Serial.println("--- REC BTN UP ...");
+    inPlaybackSession = true;
+}
+
 void initButtons() {
     Button *btnCmd = new Button(CMD_BTN_PIN, false);
     btnCmd->attachPressDownEventCb(&onCommandButtonPressDownCb, NULL);
+
+    Button *btnRec = new Button(REC_BTN_PIN, false);
+    btnRec->attachPressDownEventCb(&onRecordingButtonPressDownCb, NULL);
+    btnRec->attachPressUpEventCb(&onRecordingButtonPressUpCb, NULL);
 }
 
 void initRS485() {
@@ -121,8 +137,6 @@ void setup() {
     digitalWrite(LED_PIN, LOW);
     Serial.begin(115200);
 
-    pinMode(BUTTON_PIN, INPUT_PULLUP);
-
     audioBuffer = (int32_t*)malloc(BUFFER_SAMPLES * sizeof(int32_t));
     if (!audioBuffer) {
         Serial.println("Memory allocation failed!");
@@ -137,6 +151,10 @@ void setup() {
 
 bool isInRecordingSession() {
     return inRecordingSession;
+}
+
+bool isInPlaybackSession() {
+    return inPlaybackSession;
 }
 
 void startRecordingSession() {
@@ -163,7 +181,6 @@ void processRecording() {
 }
 
 void stopAndPlayback() {
-    Serial.println("Playback...");
     inRecordingSession = false;
 
     size_t bytesWritten;
@@ -177,21 +194,16 @@ void stopAndPlayback() {
     delay(10);
     i2s_start(I2S_PORT);
 
+    inPlaybackSession = false;
     Serial.println("Done");
 }
 
 void loop() {
-    bool buttonPressed = digitalRead(BUTTON_PIN) == LOW;
-
-    if (buttonPressed && !isInRecordingSession()) {
-        startRecordingSession();
-    }
-
-    if (buttonPressed && isInRecordingSession()) {
+    if (isInRecordingSession()) {
         processRecording();
     }
 
-    if (!buttonPressed && isInRecordingSession()) {
+    if (isInPlaybackSession()) {
         stopAndPlayback();
     }
 }
