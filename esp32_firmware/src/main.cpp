@@ -26,9 +26,9 @@ HardwareSerial RS485(1);
 #define BUFFER_SAMPLES (16000 * 3) // 3 seconds
 
 int32_t *audioBuffer;
-size_t recordedSamples = 0;
-bool inRecordingSession = false;
-bool inPlaybackSession = false;
+volatile size_t recordedSamples = 0;
+volatile bool inRecordingSession = false;
+volatile bool inPlaybackSession = false;
 
 float GAIN = 15.0;
 
@@ -112,6 +112,7 @@ static void onRecordingButtonPressDownCb(void *button_handle, void *usr_data) {
 
 static void onRecordingButtonPressUpCb(void *button_handle, void *usr_data) {
     Serial.println("--- REC BTN UP ...");
+    inRecordingSession = false;
     inPlaybackSession = true;
 }
 
@@ -130,14 +131,6 @@ void initRS485() {
 
     Serial.begin(115200);
     RS485.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
-}
-
-bool isInRecordingSession() {
-    return inRecordingSession;
-}
-
-bool isInPlaybackSession() {
-    return inPlaybackSession;
 }
 
 void startRecordingSession() {
@@ -164,8 +157,6 @@ void processRecording() {
 }
 
 void stopAndPlayback() {
-    inRecordingSession = false;
-
     size_t bytesWritten;
 
     for (size_t i = 0; i < recordedSamples; i++) {
@@ -179,6 +170,18 @@ void stopAndPlayback() {
 
     inPlaybackSession = false;
     Serial.println("Done");
+}
+
+void audioTask(void *param) {
+    while (true) {
+        if (inRecordingSession) {
+            processRecording();
+        }
+
+        if (inPlaybackSession) {
+            stopAndPlayback();
+        }
+    }
 }
 
 void setup() {
@@ -195,15 +198,9 @@ void setup() {
     setupI2S();
     initButtons();
     initRS485();
-    xTaskCreatePinnedToCore(rs485Task, "rs485Task", 4096, NULL, 1, NULL, 0);
+    xTaskCreatePinnedToCore(audioTask, "audioTask", 8192, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(rs485Task, "rs485Task", 4096, NULL, 1, NULL, 1);
 }
 
 void loop() {
-    if (isInRecordingSession()) {
-        processRecording();
-    }
-
-    if (isInPlaybackSession()) {
-        stopAndPlayback();
-    }
 }
