@@ -23,12 +23,15 @@ bool isLedOn = false;
 HardwareSerial RS485(1);
 
 #define SAMPLE_RATE 16000
-#define BUFFER_SAMPLES (16000 * 3) // 3 seconds
+#define AUDIO_BLOCK_SAMPLES 128
 
-int32_t *audioBuffer;
-volatile size_t recordedSamples = 0;
-volatile bool inRecordingSession = false;
-volatile bool inPlaybackSession = false;
+volatile bool isTalking = false;
+bool ignoreFirstPacket = true;
+
+int32_t i2sInBuffer[AUDIO_BLOCK_SAMPLES];
+int32_t i2sOutBuffer[AUDIO_BLOCK_SAMPLES];
+
+int16_t uartBuffer[AUDIO_BLOCK_SAMPLES];
 
 float GAIN = 15.0;
 
@@ -40,8 +43,8 @@ void setupI2S() {
         .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
         .communication_format = I2S_COMM_FORMAT_I2S,
         .intr_alloc_flags = 0,
-        .dma_buf_count = 4,
-        .dma_buf_len = 256,
+        .dma_buf_count = 8,
+        .dma_buf_len = 128,
         .use_apll = false
     };
 
@@ -58,14 +61,15 @@ void setupI2S() {
 
 void setTransmitMode() {
     digitalWrite(DIR_PIN, HIGH);
-    Serial.println("TX MODE");
+    // Serial.println("TX MODE");
     delayMicroseconds(50);
 }
 
 void setReceiveMode() {
+    ignoreFirstPacket = true;
     delayMicroseconds(50);
     digitalWrite(DIR_PIN, LOW);
-    Serial.println("RX MODE");
+    // Serial.println("RX MODE");
     delayMicroseconds(50);
 }
 
@@ -80,40 +84,38 @@ void sendMessage(const char* msg) {
     setReceiveMode();
 }
 
-void rs485Task(void *param) {
-    while (true) {
-        while (RS485.available()) {
-            String msg = RS485.readStringUntil('\n');
-            Serial.print("--- received: ");
-            Serial.println(msg);
-            if (isLedOn) {
-                digitalWrite(LED_PIN, LOW);
-                isLedOn = false;
-            } else {
-                digitalWrite(LED_PIN, HIGH);
-                isLedOn = true;
-            }
-        }
-
-        vTaskDelay(1);
-    }
-}
-
 static void onCommandButtonPressDownCb(void *button_handle, void *usr_data) {
     Serial.println("--- CMD BTN DOWN ...");
     sendMessage("button pressed\n");
 }
 
 static void onRecordingButtonPressDownCb(void *button_handle, void *usr_data) {
-    Serial.println("--- REC BTN DOWN ...");
-    inRecordingSession = true;
-    recordedSamples = 0;
+    RS485.flush();
+
+    while (RS485.available()) {
+        RS485.read();
+    }
+
+    delay(20);
+
+    setTransmitMode();
+    isTalking = true;
+
+    digitalWrite(LED_PIN, HIGH);
 }
 
 static void onRecordingButtonPressUpCb(void *button_handle, void *usr_data) {
-    Serial.println("--- REC BTN UP ...");
-    inRecordingSession = false;
-    inPlaybackSession = true;
+    isTalking = false;
+
+    RS485.flush();
+    delay(20);
+    setReceiveMode();
+
+    while (RS485.available()) {
+        RS485.read();
+    }
+
+    digitalWrite(LED_PIN, LOW);
 }
 
 void initButtons() {
@@ -130,56 +132,91 @@ void initRS485() {
     setReceiveMode();
 
     Serial.begin(115200);
-    RS485.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+    RS485.begin(1000000, SERIAL_8N1, RX_PIN, TX_PIN);
+
+    RS485.setRxBufferSize(4096);
+    RS485.setTxBufferSize(4096);
 }
 
-void startRecordingSession() {
-    Serial.println("Recording...");
-    inRecordingSession = true;
-    recordedSamples = 0;
-}
+// void startRecordingSession() {
+//     Serial.println("Recording...");
+//     inRecordingSession = true;
+//     recordedSamples = 0;
+// }
 
-void processRecording() {
-    if (recordedSamples >= BUFFER_SAMPLES)
-        return;
+// void processRecording() {
+//     if (recordedSamples >= BUFFER_SAMPLES)
+//         return;
 
-    int32_t rawSample;
-    size_t bytesRead;
+//     int32_t rawSample;
+//     size_t bytesRead;
 
-    i2s_read(I2S_PORT, &rawSample, sizeof(rawSample), &bytesRead, portMAX_DELAY);
-    rawSample >>= 8;
-    float x = rawSample / 8388608.0;
-    x *= GAIN;
-    x = x / (1.0 + fabs(x));
+//     i2s_read(I2S_PORT, &rawSample, sizeof(rawSample), &bytesRead, portMAX_DELAY);
+//     rawSample >>= 8;
+//     float x = rawSample / 8388608.0;
+//     x *= GAIN;
+//     x = x / (1.0 + fabs(x));
 
-    int32_t sample32 = (int32_t)(x * 2147483647);
-    audioBuffer[recordedSamples++] = sample32;
-}
+//     int32_t sample32 = (int32_t)(x * 2147483647);
+//     audioBuffer[recordedSamples++] = sample32;
+// }
 
-void stopAndPlayback() {
-    size_t bytesWritten;
+// void stopAndPlayback() {
+//     size_t bytesWritten;
 
-    for (size_t i = 0; i < recordedSamples; i++) {
-        i2s_write(I2S_PORT, &audioBuffer[i], sizeof(int32_t), &bytesWritten, portMAX_DELAY);
-    }
+//     for (size_t i = 0; i < recordedSamples; i++) {
+//         i2s_write(I2S_PORT, &audioBuffer[i], sizeof(int32_t), &bytesWritten, portMAX_DELAY);
+//     }
 
-    i2s_zero_dma_buffer(I2S_PORT);
-    i2s_stop(I2S_PORT);
-    delay(10);
-    i2s_start(I2S_PORT);
+//     i2s_zero_dma_buffer(I2S_PORT);
+//     i2s_stop(I2S_PORT);
+//     delay(10);
+//     i2s_start(I2S_PORT);
 
-    inPlaybackSession = false;
-    Serial.println("Done");
-}
+//     inPlaybackSession = false;
+//     Serial.println("Done");
+// }
 
 void audioTask(void *param) {
-    while (true) {
-        if (inRecordingSession) {
-            processRecording();
-        }
+    size_t bytesRead;
+    size_t bytesWritten;
 
-        if (inPlaybackSession) {
-            stopAndPlayback();
+    while (true) {
+        if (isTalking) {
+            i2s_read(I2S_PORT, i2sInBuffer, sizeof(i2sInBuffer), &bytesRead, portMAX_DELAY);
+
+            int samplesRead = bytesRead / sizeof(int32_t);
+
+            // Convert 32-bit I2S -> 16-bit UART PCM
+            for (int i = 0; i < samplesRead; i++) {
+                int32_t raw = i2sInBuffer[i];
+                raw >>= 8; // INMP441 style 24-bit alignment
+
+                float x = raw / 8388608.0f;
+                x *= GAIN;
+                if (x > 0.8f) x = 0.8f;
+                if (x < -0.8f) x = -0.8f;
+
+                uartBuffer[i] = (int16_t)(x * 32767.0f);
+            }
+
+            RS485.write((uint8_t*)uartBuffer, samplesRead * sizeof(int16_t));
+        } else {
+            if (RS485.available() >= sizeof(uartBuffer)) {
+                RS485.readBytes((char*)uartBuffer, sizeof(uartBuffer));
+
+                if (ignoreFirstPacket) {
+                    ignoreFirstPacket = false;
+                    continue;
+                }
+
+                // Convert 16-bit UART PCM -> 32-bit I2S
+                for (int i = 0; i < AUDIO_BLOCK_SAMPLES; i++) {
+                    i2sOutBuffer[i] = ((int32_t)uartBuffer[i]) << 16;
+                }
+
+                i2s_write(I2S_PORT, i2sOutBuffer, sizeof(i2sOutBuffer), &bytesWritten, portMAX_DELAY);
+            }
         }
     }
 }
@@ -187,19 +224,12 @@ void audioTask(void *param) {
 void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
-    Serial.begin(115200);
-
-    audioBuffer = (int32_t*)malloc(BUFFER_SAMPLES * sizeof(int32_t));
-    if (!audioBuffer) {
-        Serial.println("Memory allocation failed!");
-        while (1);
-    }
+    // Serial.begin(115200);
 
     setupI2S();
     initButtons();
     initRS485();
     xTaskCreatePinnedToCore(audioTask, "audioTask", 8192, NULL, 2, NULL, 0);
-    xTaskCreatePinnedToCore(rs485Task, "rs485Task", 4096, NULL, 1, NULL, 1);
 }
 
 void loop() {
